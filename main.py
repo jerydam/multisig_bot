@@ -10,6 +10,7 @@ from web3 import Web3
 from dotenv import load_dotenv
 
 # ================= NETWORK FIX (FORCE IPv4) =================
+# Forces the bot to use IPv4 to avoid "Network Unreachable" errors
 old_getaddrinfo = socket.getaddrinfo
 def new_getaddrinfo(*args, **kwargs):
     responses = old_getaddrinfo(*args, **kwargs)
@@ -173,8 +174,10 @@ def send_alert(chain_name, event_name, event_args, tx_hash):
     msg["To"] = ", ".join(RECIPIENT_EMAILS)
 
     try:
-        # Use SMTP_SSL on port 465
-        server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+        # === FIX: Use Standard SMTP Port 587 (TLS) ===
+        # Port 465 (SSL) often causes timeouts on Render
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
         server.login(SENDER_EMAIL, EMAIL_PASS)
         server.sendmail(SENDER_EMAIL, RECIPIENT_EMAILS, msg.as_string())
         server.quit()
@@ -184,19 +187,28 @@ def send_alert(chain_name, event_name, event_args, tx_hash):
 
 def attempt_execution(w3, contract, chain_name, tx_id):
     try:
+        # Fetch detailed tx data
         tx_data = contract.functions.getTransaction(tx_id).call()
         is_executed = tx_data[6]
         timelock_end = tx_data[9]
         
+        # LOGGING: Help you see what is happening
         if is_executed:
             return
 
         is_confirmed = contract.functions.isConfirmed(tx_id).call()
         if not is_confirmed:
+            print(f"⏳ Tx #{tx_id} on {chain_name}: Not confirmed yet.")
             return 
         
+        # Check Timelock
         current_time = w3.eth.get_block('latest')['timestamp']
-        if timelock_end > 0 and current_time >= timelock_end:
+        
+        if timelock_end == 0:
+             print(f"⏳ Tx #{tx_id} on {chain_name}: Confirmed, but timelock timer not set yet.")
+             return
+
+        if current_time >= timelock_end:
             print(f"⚡ Executing Tx #{tx_id} on {chain_name}...")
             
             account = w3.eth.account.from_key(PRIVATE_KEY)
@@ -218,6 +230,9 @@ def attempt_execution(w3, contract, chain_name, tx_id):
             tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
             
             print(f"✅ EXECUTION SENT! Hash: {w3.to_hex(tx_hash)}")
+        else:
+            remaining = timelock_end - current_time
+            print(f"🕒 Tx #{tx_id} on {chain_name}: Confirmed. Waiting for timelock ({remaining} sec left)")
             
     except Exception as e:
         if "revert" not in str(e).lower():
@@ -238,6 +253,7 @@ def main():
 
                 contract = w3.eth.contract(address=chain["contract"], abi=CONTRACT_ABI)
                 
+                # --- EVENT SCANNING ---
                 if chain["name"] not in state:
                     state[chain["name"]] = w3.eth.block_number
                 
@@ -254,21 +270,25 @@ def main():
                             
                             for event in events:
                                 args = event["args"]
-                                
-                                # === FIX: Force "0x" prefix on Transaction Hash ===
-                                # w3.to_hex() ensures it always starts with 0x
                                 tx_hash = w3.to_hex(event["transactionHash"])
                                 
                                 print(f"🔥 {event_name} detected on {chain['name']}")
                                 send_alert(chain["name"], event_name, args, chain['explorer'] + tx_hash)
-                        
                         except Exception as ev_err:
                             pass
 
                     state[chain["name"]] = current_block
 
+                # --- AUTO EXECUTION ---
+                # Checks the last 50 transactions to make sure nothing is missed
                 total_count = contract.functions.getTransactionCount().call()
-                start_check = max(0, total_count - 5)
+                
+                # VISUAL DEBUG: Let you know it's checking
+                if total_count > 0:
+                    print(f"🔍 Checking {total_count} transactions for execution...")
+
+                start_check = max(0, total_count - 50) 
+                
                 for i in range(start_check, total_count):
                     attempt_execution(w3, contract, chain["name"], i)
 
