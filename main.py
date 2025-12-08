@@ -3,16 +3,24 @@ import smtplib
 import json
 import os
 import threading
+import socket
 from flask import Flask
 from email.mime.text import MIMEText
 from web3 import Web3
 from dotenv import load_dotenv
 
+# ================= NETWORK FIX (FORCE IPv4) =================
+old_getaddrinfo = socket.getaddrinfo
+def new_getaddrinfo(*args, **kwargs):
+    responses = old_getaddrinfo(*args, **kwargs)
+    return [response for response in responses if response[0] == socket.AF_INET]
+socket.getaddrinfo = new_getaddrinfo
+# ============================================================
+
 # Load environment variables
 load_dotenv()
 
 # ================= FAKE WEB SERVER FOR RENDER =================
-# This allows the bot to "listen" on a port so Render keeps it alive.
 app = Flask(__name__)
 
 @app.route('/')
@@ -20,19 +28,16 @@ def home():
     return "🤖 Multisig Bot is running correctly!"
 
 def run_web_server():
-    # Render sets the PORT env var automatically (defaults to 10000)
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 # ==============================================================
 
 # ================= CONFIGURATION =================
 
-# 1. AUTHENTICATION & KEYS
 PRIVATE_KEY = os.getenv("BOT_PRIVATE_KEY")
 EMAIL_PASS = os.getenv("EMAIL_APP_PASSWORD")
 SENDER_EMAIL = os.getenv("EMAIL_USER")
 
-# Parse recipients safely
 recipients_str = os.getenv("RECIPIENTS")
 if recipients_str:
     RECIPIENT_EMAILS = recipients_str.split(",")
@@ -85,7 +90,7 @@ WATCHED_EVENTS = [
     "ContractUnpaused"
 ]
 
-# 4. ABI (Full ABI required)
+# 4. ABI
 CONTRACT_ABI = json.loads('''[
     {"inputs":[{"internalType":"address","name":"_companyWallet","type":"address"},{"internalType":"address","name":"_ceo","type":"address"},{"internalType":"string","name":"_ceoName","type":"string"},{"internalType":"address","name":"_cto","type":"address"},{"internalType":"string","name":"_ctoName","type":"string"},{"internalType":"address","name":"_cfo","type":"address"},{"internalType":"string","name":"_cfoName","type":"string"}],"stateMutability":"nonpayable","type":"constructor"},
     {"anonymous":false,"inputs":[],"name":"ContractPaused","type":"event"},
@@ -137,23 +142,17 @@ CONTRACT_ABI = json.loads('''[
 # ================= CORE LOGIC =================
 
 def send_alert(chain_name, event_name, event_args, tx_hash):
-    """
-    Sends an email with detailed content about any event.
-    """
     if not RECIPIENT_EMAILS:
         print("⚠️ No recipients found in .env")
         return
 
-    # 1. Format the arguments into a readable list
-    # event_args is a dictionary (AttributeDict), so we loop through it
+    # 1. Format content
     details_str = ""
     for key, value in event_args.items():
-        # Clean up bytes data for readability
         if isinstance(value, bytes):
             value = value.hex()
         details_str += f"- {key}: {value}\n"
 
-    # 2. Construct the Email Body
     body = f"""
     🔔 Multisig Update: {event_name}
     ========================================
@@ -165,18 +164,17 @@ def send_alert(chain_name, event_name, event_args, tx_hash):
     
     ----------------------------------------
     View Transaction:
-    `0x${tx_hash}`
+    {tx_hash}
     """
 
-    # 3. Send Email
     msg = MIMEText(body)
     msg["Subject"] = f"[{chain_name}] {event_name} Detected"
     msg["From"] = SENDER_EMAIL
     msg["To"] = ", ".join(RECIPIENT_EMAILS)
 
     try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
+        # Use SMTP_SSL on port 465
+        server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
         server.login(SENDER_EMAIL, EMAIL_PASS)
         server.sendmail(SENDER_EMAIL, RECIPIENT_EMAILS, msg.as_string())
         server.quit()
@@ -185,28 +183,22 @@ def send_alert(chain_name, event_name, event_args, tx_hash):
         print(f"❌ Email Failed: {e}")
 
 def attempt_execution(w3, contract, chain_name, tx_id):
-    """Checks requirements and executes if ready."""
     try:
-        # Fetch detailed tx data
         tx_data = contract.functions.getTransaction(tx_id).call()
         is_executed = tx_data[6]
         timelock_end = tx_data[9]
         
-        # 1. Stop if already executed
         if is_executed:
             return
 
-        # 2. Check if confirmed enough
         is_confirmed = contract.functions.isConfirmed(tx_id).call()
         if not is_confirmed:
-            return # Waiting for more signatures
+            return 
         
-        # 3. Check Timelock
         current_time = w3.eth.get_block('latest')['timestamp']
         if timelock_end > 0 and current_time >= timelock_end:
             print(f"⚡ Executing Tx #{tx_id} on {chain_name}...")
             
-            # Build Transaction
             account = w3.eth.account.from_key(PRIVATE_KEY)
             nonce = w3.eth.get_transaction_count(account.address)
             
@@ -222,7 +214,6 @@ def attempt_execution(w3, contract, chain_name, tx_id):
 
             build_tx = contract.functions.executeTransactionManual(tx_id).build_transaction(tx_params)
             
-            # Sign & Send
             signed_tx = w3.eth.account.sign_transaction(build_tx, PRIVATE_KEY)
             tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
             
@@ -240,7 +231,6 @@ def main():
     while True:
         for chain in CHAINS:
             try:
-                # Initialize Web3
                 w3 = Web3(Web3.HTTPProvider(chain["rpc"]))
                 if not w3.is_connected():
                     print(f"⚠️ Failed to connect to {chain['name']}")
@@ -248,7 +238,6 @@ def main():
 
                 contract = w3.eth.contract(address=chain["contract"], abi=CONTRACT_ABI)
                 
-                # Setup State
                 if chain["name"] not in state:
                     state[chain["name"]] = w3.eth.block_number
                 
@@ -258,34 +247,26 @@ def main():
                 if current_block > last_block:
                     print(f"Scanning {chain['name']} blocks {last_block} to {current_block}...")
                     
-                    # === LOOP THROUGH ALL WATCHED EVENTS ===
                     for event_name in WATCHED_EVENTS:
                         try:
-                            # Dynamically get the event object by name
                             event_obj = getattr(contract.events, event_name)
-                            
-                            # Get logs
                             events = event_obj.get_logs(from_block=last_block)
                             
                             for event in events:
-                                # Get specific details (args)
                                 args = event["args"]
-                                tx_hash = event["transactionHash"].hex()
+                                
+                                # === FIX: Force "0x" prefix on Transaction Hash ===
+                                # w3.to_hex() ensures it always starts with 0x
+                                tx_hash = w3.to_hex(event["transactionHash"])
                                 
                                 print(f"🔥 {event_name} detected on {chain['name']}")
-                                
-                                # Send Rich Email
                                 send_alert(chain["name"], event_name, args, chain['explorer'] + tx_hash)
                         
                         except Exception as ev_err:
-                            # Some events might not exist in older ABI versions or might fail
-                            print(f"Skipping event {event_name}: {ev_err}")
+                            pass
 
-                    # Update state only after checking all events
                     state[chain["name"]] = current_block
 
-                # === AUTO EXECUTION CHECK ===
-                # Check last 5 transactions
                 total_count = contract.functions.getTransactionCount().call()
                 start_check = max(0, total_count - 5)
                 for i in range(start_check, total_count):
@@ -297,10 +278,6 @@ def main():
         time.sleep(12)
 
 if __name__ == "__main__":
-    # 1. Start the Fake Web Server in a background thread
-    # This prevents Render from killing the bot for "no open port"
     t = threading.Thread(target=run_web_server)
     t.start()
-
-    # 2. Start your Bot Logic
     main()
