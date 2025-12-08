@@ -1,0 +1,23 @@
+# Security (NEVER upload these)
+.env
+.env.local
+private_keys.json
+
+# Python Virtual Environment
+venv/
+env/
+.venv/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE & OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
