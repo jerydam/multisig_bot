@@ -2,12 +2,28 @@ import time
 import smtplib
 import json
 import os
+import threading
+from flask import Flask
 from email.mime.text import MIMEText
 from web3 import Web3
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# ================= FAKE WEB SERVER FOR RENDER =================
+# This allows the bot to "listen" on a port so Render keeps it alive.
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Multisig Bot is running correctly!"
+
+def run_web_server():
+    # Render sets the PORT env var automatically (defaults to 10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+# ==============================================================
 
 # ================= CONFIGURATION =================
 
@@ -58,7 +74,6 @@ CHAINS = [
 ]
 
 # 3. LIST OF EVENTS TO WATCH
-# These must match the exact names in your Solidity/ABI
 WATCHED_EVENTS = [
     "TransactionSubmitted",
     "TransactionConfirmed",
@@ -282,4 +297,10 @@ def main():
         time.sleep(12)
 
 if __name__ == "__main__":
+    # 1. Start the Fake Web Server in a background thread
+    # This prevents Render from killing the bot for "no open port"
+    t = threading.Thread(target=run_web_server)
+    t.start()
+
+    # 2. Start your Bot Logic
     main()
