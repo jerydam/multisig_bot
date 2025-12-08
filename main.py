@@ -165,7 +165,7 @@ def send_alert(chain_name, event_name, event_args, tx_hash):
     
     ----------------------------------------
     View Transaction:
-    {tx_hash}
+    `0x${tx_hash}`
     """
 
     # 3. Send Email
