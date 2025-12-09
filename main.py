@@ -142,40 +142,143 @@ CONTRACT_ABI = json.loads('''[
 
 # ================= CORE LOGIC =================
 
-def send_alert(chain_name, event_name, event_args, tx_hash):
+def format_event_details(chain, event_name, event_args):
+    """Formats the technical event arguments into a user-readable string."""
+    details = []
+
+    # Helper function to format addresses and values
+    def format_address(key, addr):
+        return f"**{key}**: `{addr}`"
+
+    def format_value(key, value):
+        # Convert wei to Ether/Celo (assuming 18 decimal places)
+        if key in ["value", "percentage"]:
+            # Check if it's a value (like ETH/Celo amount) or percentage
+            if key == "value":
+                try:
+                    # Convert to float for a more standard currency-like display
+                    # Note: You might need to adjust the divisor (10**18) if the chain uses a different decimal count.
+                    readable_value = Web3.from_wei(value, 'ether')
+                    return f"**Amount** (Value): {readable_value:.6f} {chain['name']} Native Token"
+                except:
+                    # Fallback for non-wei values or errors
+                    return f"**Amount** (Value): {value}" 
+            elif key == "percentage":
+                 # Assuming percentage is stored as a large integer (e.g., out of 10000)
+                 return f"**Weight/Percentage**: {value / 100}%" 
+        
+        # General formatting for all other large integers
+        if isinstance(value, int) and value >= 1000000000000000000 and key not in ["transactionId"]:
+             return f"**{key}**: {value} (Large Number)"
+
+        # Addresses
+        if isinstance(value, str) and Web3.is_address(value):
+            return format_address(key.capitalize(), value)
+
+        # Bytes/Data
+        if isinstance(value, bytes):
+            return f"**Data (bytes)**: `0x{value.hex()[:10]}...` (Click Tx Hash for full data)"
+
+        return f"**{key}**: {value}"
+
+    # 1. Handle specific event types for clarity
+
+    if event_name in ["TransactionSubmitted", "TransactionConfirmed", "TransactionRevoked", "TransactionExecuted"]:
+        tx_id = event_args.get("transactionId")
+        if tx_id is not None:
+            details.append(f"**Transaction ID**: #{tx_id}")
+
+        if event_name == "TransactionSubmitted":
+            details.append(format_address("Initiator", event_args.get("initiator")))
+            if event_args.get("isTokenTransfer"):
+                 details.append(f"**Transaction Type**: Token Transfer")
+                 details.append(format_address("Token Address", event_args.get("tokenAddress")))
+            else:
+                 details.append(f"**Transaction Type**: Native Token/Contract Call")
+
+            details.append(format_address("Recipient/Target", event_args.get("to")))
+            details.append(format_value("value", event_args.get("value")))
+            details.append(format_value("data", event_args.get("data"))) # For calldata
+
+        elif event_name == "TransactionConfirmed":
+            details.append(format_address("Confirmer", event_args.get("owner")))
+            details.append(format_value("percentage", event_args.get("percentage")))
+        
+        elif event_name == "TransactionRevoked":
+            details.append(format_address("Revoker", event_args.get("owner")))
+        
+    elif event_name in ["OwnerAdded", "OwnerRemoved"]:
+        if event_name == "OwnerAdded":
+            details.append(format_address("New Owner Address", event_args.get("owner")))
+            details.append(f"**Name**: {event_args.get('name')}")
+            details.append(format_value("percentage", event_args.get("percentage")))
+        elif event_name == "OwnerRemoved":
+            details.append(format_address("Removed Owner Address", event_args.get("owner")))
+            
+    elif event_name in ["ContractPaused", "ContractUnpaused"]:
+        details.append(f"**Status Change**: Contract is now **{event_name.split('Contract')[1]}**.")
+        
+    # 2. Fallback for unhandled or simple events
+    if not details:
+        for key, value in event_args.items():
+            details.append(format_value(key, value))
+
+    return "\n".join(details)
+
+def send_alert(chain, event_name, event_args, tx_url):
     if not RECIPIENT_EMAILS:
         print("⚠️ No recipients found in .env")
         return
 
-    # 1. Format content
-    details_str = ""
-    for key, value in event_args.items():
-        if isinstance(value, bytes):
-            value = value.hex()
-        details_str += f"- {key}: {value}\n"
+    chain_name = chain["name"]
+    
+    # 1. Format content using the helper function
+    readable_details = format_event_details(chain, event_name, event_args)
+
+    subject_map = {
+        "TransactionSubmitted": "🚨 NEW TX PENDING CONFIRMATION",
+        "TransactionConfirmed": "✅ CONFIRMATION RECEIVED",
+        "TransactionExecuted": "🚀 TX EXECUTED SUCCESSFULLY",
+        "OwnerAdded": "👥 NEW OWNER ADDED (Pending/Complete)",
+        "OwnerRemoved": "👤 OWNER REMOVED (Pending/Complete)",
+        "ContractPaused": "🛑 CONTRACT PAUSED",
+        "ContractUnpaused": "🟢 CONTRACT UNPAUSED",
+    }
+    
+    subject_prefix = subject_map.get(event_name, f"🔔 {event_name}")
 
     body = f"""
-    🔔 Multisig Update: {event_name}
+    ***{subject_prefix}***
+    
     ========================================
-    Chain: {chain_name}
-    Event: {event_name}
     
-    Details:
-    {details_str}
+    ## 🔗 Chain & Event Details
     
-    ----------------------------------------
-    View Transaction:
-    {tx_hash}
+    * **Chain**: **{chain_name}**
+    * **Event Type**: `{event_name}`
+    
+    ---
+    
+    ## 📝 Event Arguments
+    
+    {readable_details}
+    
+    ---
+    
+    ## 🔍 Transaction Link
+    
+    View Full Transaction Details:
+    
+    <a href="{tx_url}">{tx_url}</a>
     """
 
-    msg = MIMEText(body)
-    msg["Subject"] = f"[{chain_name}] {event_name} Detected"
+    msg = MIMEText(body, 'html') # Changed to 'html' to support **markdown bolding**
+    msg["Subject"] = f"[{chain_name}] {subject_prefix}"
     msg["From"] = SENDER_EMAIL
     msg["To"] = ", ".join(RECIPIENT_EMAILS)
 
     try:
         # === FIX: Use Standard SMTP Port 587 (TLS) ===
-        # Port 465 (SSL) often causes timeouts on Render
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
         server.login(SENDER_EMAIL, EMAIL_PASS)
