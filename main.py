@@ -219,10 +219,17 @@ def attempt_execution(w3, contract, chain_name, tx_id):
                 'nonce': nonce,
             }
 
-            if chain_name == "Celo":
-                tx_params['gasPrice'] = w3.eth.generate_gas_price()
-            else:
-                tx_params['gasPrice'] = w3.eth.gas_price
+            # === GAS FIX IS HERE ===
+            try:
+                current_gas = w3.eth.gas_price
+                if chain_name == "Celo":
+                     # Celo likes integers for gasPrice
+                    tx_params['gasPrice'] = int(current_gas * 1.1)
+                else:
+                    tx_params['gasPrice'] = int(current_gas)
+            except Exception as g_err:
+                 print(f"⚠️ Gas fetch failed, using fallback: {g_err}")
+                 tx_params['gasPrice'] = 5000000000 # 5 Gwei fallback
 
             build_tx = contract.functions.executeTransactionManual(tx_id).build_transaction(tx_params)
             
