@@ -50,31 +50,31 @@ CHAINS = [
     {
         "name": "Celo",
         "rpc": "https://forno.celo.org",
-        "contract": "0x91EaAcBa3c58EA499e229e703cbA3e6eBb52607E", 
+        "contract": "0xfBcD0dACa184481cFB59bf6EbF644465b788BD9C", 
         "explorer": "https://celoscan.io/tx/"
     },
     {
         "name": "Optimism",
         "rpc": "https://mainnet.optimism.io",
-        "contract": "0x91EaAcBa3c58EA499e229e703cbA3e6eBb52607E",
+        "contract": "0xfBcD0dACa184481cFB59bf6EbF644465b788BD9C",
         "explorer": "https://optimistic.etherscan.io/tx/"
     },
     {
         "name": "Lisk",
         "rpc": "https://rpc.api.lisk.com",
-        "contract": "0x91EaAcBa3c58EA499e229e703cbA3e6eBb52607E",
+        "contract": "0xfBcD0dACa184481cFB59bf6EbF644465b788BD9C",
         "explorer": "https://blockscout.lisk.com/tx/"
     },
     {
         "name": "Arbitrum",
         "rpc": "https://arb1.arbitrum.io/rpc",
-        "contract": "0x91EaAcBa3c58EA499e229e703cbA3e6eBb52607E",
+        "contract": "0xfBcD0dACa184481cFB59bf6EbF644465b788BD9C",
         "explorer": "https://arbiscan.io/tx/"
     },
     {
         "name": "Base",
         "rpc": "https://mainnet.base.org",
-        "contract": "0x91EaAcBa3c58EA499e229e703cbA3e6eBb52607E",
+        "contract": "0xfBcD0dACa184481cFB59bf6EbF644465b788BD9C",
         "explorer": "https://basescan.org/tx/"
     }
 ]
